@@ -3,6 +3,7 @@ package com.createshop;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.ChatFormatting;
@@ -13,6 +14,7 @@ import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.commands.arguments.item.ItemArgument;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
@@ -25,6 +27,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.BlockHitResult;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
@@ -32,7 +35,12 @@ import java.util.UUID;
 public final class ShopCommands {
 	private ShopCommands() {}
 
-	private record Pending(String name, int price, ItemStack cost) {}
+	private static final List<String> COLORS = List.of(
+			"white", "gray", "dark_gray", "black", "red", "dark_red", "gold", "yellow",
+			"green", "dark_green", "aqua", "dark_aqua", "blue", "dark_blue", "light_purple", "dark_purple");
+
+	/** name is null when the item's own name should be used. */
+	private record Pending(String name, int price, ItemStack cost, String color) {}
 
 	private static final Map<UUID, Pending> PENDING = new HashMap<>();
 	private static CommandDispatcher<CommandSourceStack> dispatcher;
@@ -40,12 +48,15 @@ public final class ShopCommands {
 	public static void register(CommandDispatcher<CommandSourceStack> d, CommandBuildContext context) {
 		dispatcher = d;
 
+		// /createshop <price> <cost> [color]              -> uses the item's own name
+		// /createshop "<name>" <price> <cost> [color]     -> custom name (quotes for several words)
 		d.register(Commands.literal("createshop")
 				.requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
+				.then(Commands.argument("price", IntegerArgumentType.integer(1, 2304))
+						.then(tail(context)))
 				.then(Commands.argument("name", StringArgumentType.string())
 						.then(Commands.argument("price", IntegerArgumentType.integer(1, 2304))
-								.then(Commands.argument("cost", ItemArgument.item(context))
-										.executes(ShopCommands::createShop)))));
+								.then(tail(context)))));
 
 		d.register(Commands.literal("removeshop")
 				.requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
@@ -58,8 +69,15 @@ public final class ShopCommands {
 				.executes(ShopCommands::listShops));
 	}
 
-	// /createshop "name" price cost  -> then right-click the block you want the shop on
-	private static int createShop(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+	private static RequiredArgumentBuilder<CommandSourceStack, ?> tail(CommandBuildContext context) {
+		return Commands.argument("cost", ItemArgument.item(context))
+				.executes(ctx -> createShop(ctx, "white"))
+				.then(Commands.argument("color", StringArgumentType.word())
+						.suggests((c, b) -> SharedSuggestionProvider.suggest(COLORS.stream(), b))
+						.executes(ctx -> createShop(ctx, StringArgumentType.getString(ctx, "color"))));
+	}
+
+	private static int createShop(CommandContext<CommandSourceStack> ctx, String color) throws CommandSyntaxException {
 		CommandSourceStack source = ctx.getSource();
 		ServerPlayer player = source.getPlayerOrException();
 
@@ -67,12 +85,21 @@ public final class ShopCommands {
 			source.sendFailure(Component.literal("Hold the item you want to sell in your main hand first."));
 			return 0;
 		}
+		if (!COLORS.contains(color)) {
+			source.sendFailure(Component.literal("Unknown color. Options: " + String.join(", ", COLORS)));
+			return 0;
+		}
 
-		String name = StringArgumentType.getString(ctx, "name");
+		String name = null;
+		try {
+			name = StringArgumentType.getString(ctx, "name");
+		} catch (IllegalArgumentException ignored) {
+			// no custom name given: the item's own name is used
+		}
 		int price = IntegerArgumentType.getInteger(ctx, "price");
 		ItemStack cost = ItemArgument.getItem(ctx, "cost").createItemStack(1);
 
-		PENDING.put(player.getUUID(), new Pending(name, price, cost));
+		PENDING.put(player.getUUID(), new Pending(name, price, cost, color));
 		source.sendSuccess(() -> Component.literal(
 				"Now right-click the block you want the shop on (keep holding the item)."), false);
 		return 1;
@@ -97,8 +124,10 @@ public final class ShopCommands {
 		}
 		source.sendSuccess(() -> Component.literal("--- Shops ---").withStyle(ChatFormatting.GOLD), false);
 		for (ShopManager.Shop shop : ShopManager.all()) {
-			source.sendSuccess(() -> Component.literal("#" + shop.id() + " " + shop.name() + " - "
-					+ shop.price() + " ").append(shop.cost().getHoverName())
+			source.sendSuccess(() -> Component.literal("#" + shop.id() + " ")
+					.append(shop.product().getHoverName())
+					.append(" - " + shop.price() + " ")
+					.append(shop.cost().getHoverName())
 					.append(" at " + shop.x() + " " + shop.y() + " " + shop.z()), false);
 		}
 		return ShopManager.all().size();
@@ -127,10 +156,18 @@ public final class ShopCommands {
 			}
 
 			ItemStack product = held.copy();
-			product.set(DataComponents.CUSTOM_NAME, Component.literal(pending.name()));
+			String shopName;
+			if (pending.name() != null) {
+				product.set(DataComponents.CUSTOM_NAME, Component.literal(pending.name()));
+				shopName = pending.name();
+			} else if (product.has(DataComponents.CUSTOM_NAME)) {
+				shopName = product.getHoverName().getString();
+			} else {
+				shopName = ""; // use the item's own (translated) name
+			}
 
-			ShopManager.Shop shop = ShopManager.add(pending.name(), product, pending.cost(), pending.price(),
-					dim, pos.getX(), pos.getY(), pos.getZ());
+			ShopManager.Shop shop = ShopManager.add(shopName, product, pending.cost(), pending.price(),
+					dim, pos.getX(), pos.getY(), pos.getZ(), pending.color());
 			spawnHologram(sp, shop);
 			source.sendSuccess(() -> Component.literal("Created shop #" + shop.id()), false);
 			return InteractionResult.SUCCESS;
@@ -145,56 +182,108 @@ public final class ShopCommands {
 	}
 
 	private static void buy(ServerPlayer player, ShopManager.Shop shop) {
-		CommandSourceStack source = player.createCommandSourceStack();
 		Item costItem = shop.cost().getItem();
+		int price = shop.price();
+		Inventory inv = player.getInventory();
 
 		int have = count(player, costItem);
-		if (have < shop.price()) {
-			source.sendFailure(Component.literal("You need " + (shop.price() - have) + " more ")
-					.append(shop.cost().getHoverName()));
+		if (have < price) {
+			actionBar(player, "[{text:\"You need " + (price - have) + " more \",color:\"red\"},"
+					+ nameJson(shop.cost(), "red", false) + "]");
 			return;
 		}
-
-		Inventory inv = player.getInventory();
 		if (inv.getFreeSlot() == -1) {
-			source.sendFailure(Component.literal("Your inventory is full."));
+			actionBar(player, "{text:\"Your inventory is full\",color:\"red\"}");
 			return;
 		}
 
-		take(player, costItem, shop.price());
+		take(player, costItem, price);
+		if (have - count(player, costItem) != price) {
+			CreateShopMod.LOGGER.error("Shop #{}: payment of {} could not be taken", shop.id(), price);
+			actionBar(player, "{text:\"Purchase failed - nothing was taken\",color:\"red\"}");
+			return;
+		}
+
 		inv.setItem(inv.getFreeSlot(), shop.product().copy());
 
-		source.sendSuccess(() -> Component.literal("Bought ").append(shop.product().getHoverName())
-				.append(" for " + shop.price() + " ").append(shop.cost().getHoverName()), false);
+		actionBar(player, "[{text:\"Bought \",color:\"green\"}," + nameJson(shop.product(), "green", false)
+				+ ",{text:\" for " + price + " \",color:\"green\"}," + nameJson(shop.cost(), "green", false) + "]");
 	}
 
-	// Floating item + text above the block, made with vanilla display entities.
+	// ---------------------------------------------------------------- hologram
+
 	private static void spawnHologram(ServerPlayer player, ShopManager.Shop shop) {
 		CommandSourceStack src = player.createCommandSourceStack().withSuppressedOutput();
 		String tags = "Tags:[\"createshop\",\"createshop_" + shop.id() + "\"]";
+		String c = shop.color();
+		double x = shop.x() + 0.5;
+		double z = shop.z() + 0.5;
+		double y = shop.y();
 
-		String itemPos = String.format(Locale.ROOT, "%.2f %.2f %.2f", shop.x() + 0.5, shop.y() + 1.35, shop.z() + 0.5);
-		String textPos = String.format(Locale.ROOT, "%.2f %.2f %.2f", shop.x() + 0.5, shop.y() + 1.95, shop.z() + 0.5);
-
-		run(src, "summon minecraft:item_display " + itemPos + " {" + tags
-				+ ",billboard:\"vertical\",item_display:\"ground\""
-				+ ",transformation:{left_translation:[0f,0f,0f],right_translation:[0f,0f,0f]"
-				+ ",left_rotation:[0f,0f,0f,1f],right_rotation:[0f,0f,0f,1f],scale:[1.3f,1.3f,1.3f]}}");
+		// 1) the item being sold (copied exactly from your hand, so modded items work)
+		run(src, "summon minecraft:item_display " + pos(x, y + 1.25, z) + " {" + tags
+				+ ",billboard:\"vertical\",item_display:\"ground\"," + transform(0, 0, 1.3) + "}");
 		run(src, "item replace entity @e[type=minecraft:item_display,tag=createshop_" + shop.id()
 				+ ",limit=1] contents from entity @s weapon.mainhand");
 
-		StringBuilder text = new StringBuilder("[");
-		text.append("{text:\"").append(esc(shop.name())).append("\",color:\"gold\",bold:true},");
-		text.append("{text:\"\\n\"},");
-		text.append("{text:\"").append(shop.price()).append(" x \",color:\"yellow\"},");
-		text.append("{translate:\"").append(shop.cost().getItem().getDescriptionId()).append("\",color:\"yellow\"}");
+		// 2) the name (bold)
+		String name = shop.name().isEmpty()
+				? nameJson(shop.product(), c, true)
+				: "{text:\"" + esc(shop.name()) + "\",bold:true,color:\"" + c + "\"}";
 		if (shop.product().getCount() > 1) {
-			text.append(",{text:\"  (gives ").append(shop.product().getCount()).append(")\",color:\"gray\"}");
+			name = "[" + name + ",{text:\" x" + shop.product().getCount() + "\",color:\"" + c + "\"}]";
 		}
-		text.append("]");
+		run(src, "summon minecraft:text_display " + pos(x, y + 2.0, z) + " {" + tags
+				+ ",billboard:\"center\",text:" + name + "}");
 
-		run(src, "summon minecraft:text_display " + textPos + " {" + tags
-				+ ",billboard:\"center\",text:" + text + "}");
+		// 3) the price row: "10 x" followed by a small icon of the cost item
+		int digits = String.valueOf(shop.price()).length();
+		double textW = 0.025 * (6 * digits + 10);
+		double iconW = 0.4;
+		double gap = 0.05;
+		double total = textW + gap + iconW;
+		double textX = -total / 2 + textW / 2;
+		double iconX = total / 2 - iconW / 2;
+		double rowY = y + 1.72;
+		String costId = BuiltInRegistries.ITEM.getKey(shop.cost().getItem()).toString();
+
+		run(src, "summon minecraft:text_display " + pos(x, rowY, z) + " {" + tags
+				+ ",billboard:\"center\"," + transform(textX, 0, 1.0)
+				+ ",text:{text:\"" + shop.price() + " x\",color:\"" + c + "\"}}");
+		run(src, "summon minecraft:item_display " + pos(x, rowY, z) + " {" + tags
+				+ ",billboard:\"center\",item_display:\"gui\",item:{id:\"" + costId + "\",count:1},"
+				+ transform(iconX, 0.12, iconW) + "}");
+	}
+
+	private static String transform(double tx, double ty, double scale) {
+		return "transformation:{left_translation:[" + f(tx) + "," + f(ty) + ",0f],right_translation:[0f,0f,0f],"
+				+ "left_rotation:[0f,0f,0f,1f],right_rotation:[0f,0f,0f,1f],scale:["
+				+ f(scale) + "," + f(scale) + "," + f(scale) + "]}";
+	}
+
+	private static String f(double v) {
+		return String.format(Locale.ROOT, "%.3f", v) + "f";
+	}
+
+	private static String pos(double x, double y, double z) {
+		return String.format(Locale.ROOT, "%.2f %.2f %.2f", x, y, z);
+	}
+
+	// ---------------------------------------------------------------- helpers
+
+	/** Item name as a text component: custom names as text, everything else as a translation (works for modded items). */
+	private static String nameJson(ItemStack stack, String color, boolean bold) {
+		String extra = ",color:\"" + color + "\"" + (bold ? ",bold:true" : "");
+		if (stack.has(DataComponents.CUSTOM_NAME)) {
+			return "{text:\"" + esc(stack.getHoverName().getString()) + "\"" + extra + "}";
+		}
+		return "{translate:\"" + stack.getItem().getDescriptionId() + "\"" + extra + "}";
+	}
+
+	private static void actionBar(ServerPlayer player, String componentSnbt) {
+		CommandSourceStack serverSource = player.createCommandSourceStack().getServer()
+				.createCommandSourceStack().withSuppressedOutput();
+		run(serverSource, "title " + player.getUUID() + " actionbar " + componentSnbt);
 	}
 
 	private static String esc(String s) {
