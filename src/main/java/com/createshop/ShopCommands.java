@@ -221,8 +221,8 @@ public final class ShopCommands {
 		double y = shop.y();
 
 		// 1) the item being sold (copied exactly from your hand, so modded items work)
-		run(src, "summon minecraft:item_display " + pos(x, y + 0.25, z) + " {" + tags
-				+ ",billboard:\"vertical\",item_display:\"ground\"," + transform(0, 0, 1.3) + "}");
+		run(src, "summon minecraft:item_display " + pos(x, y + 1.5, z) + " {" + tags
+				+ ",billboard:\"vertical\",item_display:\"ground\"," + transform(0, 0, 0.25) + "}");
 		run(src, "item replace entity @e[type=minecraft:item_display,tag=createshop_" + shop.id()
 				+ ",limit=1] contents from entity @s weapon.mainhand");
 
