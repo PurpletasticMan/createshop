@@ -19,9 +19,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
-/** Holds every shop listing and saves them to <world>/createshop.json */
 public final class ShopManager {
-	public record Shop(int id, String name, ItemStack product, ItemStack cost, int price) {}
+	public record Shop(int id, String name, ItemStack product, ItemStack cost, int price,
+					   String dim, int x, int y, int z) {}
 
 	private static final Map<Integer, Shop> SHOPS = new TreeMap<>();
 	private static int nextId = 1;
@@ -30,8 +30,9 @@ public final class ShopManager {
 
 	private ShopManager() {}
 
-	public static Shop add(String name, ItemStack product, ItemStack cost, int price) {
-		Shop shop = new Shop(nextId++, name, product, cost, price);
+	public static Shop add(String name, ItemStack product, ItemStack cost, int price,
+						   String dim, int x, int y, int z) {
+		Shop shop = new Shop(nextId++, name, product, cost, price, dim, x, y, z);
 		SHOPS.put(shop.id(), shop);
 		save();
 		return shop;
@@ -45,6 +46,13 @@ public final class ShopManager {
 
 	public static Shop get(int id) {
 		return SHOPS.get(id);
+	}
+
+	public static Shop at(String dim, int x, int y, int z) {
+		for (Shop s : SHOPS.values()) {
+			if (s.dim().equals(dim) && s.x() == x && s.y() == y && s.z() == z) return s;
+		}
+		return null;
 	}
 
 	public static Collection<Shop> all() {
@@ -76,7 +84,11 @@ public final class ShopManager {
 							o.get("name").getAsString(),
 							ItemStack.CODEC.parse(ops, o.get("product")).getOrThrow(),
 							ItemStack.CODEC.parse(ops, o.get("cost")).getOrThrow(),
-							o.get("price").getAsInt());
+							o.get("price").getAsInt(),
+							o.get("dim").getAsString(),
+							o.get("x").getAsInt(),
+							o.get("y").getAsInt(),
+							o.get("z").getAsInt());
 					SHOPS.put(id, shop);
 					nextId = Math.max(nextId, id + 1);
 				} catch (Exception e) {
@@ -97,6 +109,10 @@ public final class ShopManager {
 			o.addProperty("id", shop.id());
 			o.addProperty("name", shop.name());
 			o.addProperty("price", shop.price());
+			o.addProperty("dim", shop.dim());
+			o.addProperty("x", shop.x());
+			o.addProperty("y", shop.y());
+			o.addProperty("z", shop.z());
 			o.add("product", ItemStack.CODEC.encodeStart(ops, shop.product()).getOrThrow());
 			o.add("cost", ItemStack.CODEC.encodeStart(ops, shop.cost()).getOrThrow());
 			array.add(o);
