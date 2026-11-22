@@ -221,7 +221,7 @@ public final class ShopCommands {
 		double y = shop.y();
 
 		// 1) the item being sold (copied exactly from your hand, so modded items work)
-		run(src, "summon minecraft:item_display " + pos(x, y + 1.5, z) + " {" + tags
+		run(src, "summon minecraft:item_display " + pos(x, y + 0.5, z) + " {" + tags
 				+ ",billboard:\"vertical\",item_display:\"ground\"," + transform(0, 0, 0.25) + "}");
 		run(src, "item replace entity @e[type=minecraft:item_display,tag=createshop_" + shop.id()
 				+ ",limit=1] contents from entity @s weapon.mainhand");
@@ -239,7 +239,7 @@ public final class ShopCommands {
 		// 3) the price row: "10 x" followed by a small icon of the cost item
 		int digits = String.valueOf(shop.price()).length();
 		double textW = 0.025 * (6 * digits + 10);
-		double iconW = 0.4;
+		double iconW = 0.2;
 		double gap = 0.05;
 		double total = textW + gap + iconW;
 		double textX = -total / 2 + textW / 2;
