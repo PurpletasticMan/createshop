@@ -20,8 +20,9 @@ import java.util.Map;
 import java.util.TreeMap;
 
 public final class ShopManager {
+	/** name is empty ("") when the shop uses the item's own name. */
 	public record Shop(int id, String name, ItemStack product, ItemStack cost, int price,
-					   String dim, int x, int y, int z) {}
+					   String dim, int x, int y, int z, String color) {}
 
 	private static final Map<Integer, Shop> SHOPS = new TreeMap<>();
 	private static int nextId = 1;
@@ -31,8 +32,8 @@ public final class ShopManager {
 	private ShopManager() {}
 
 	public static Shop add(String name, ItemStack product, ItemStack cost, int price,
-						   String dim, int x, int y, int z) {
-		Shop shop = new Shop(nextId++, name, product, cost, price, dim, x, y, z);
+						   String dim, int x, int y, int z, String color) {
+		Shop shop = new Shop(nextId++, name, product, cost, price, dim, x, y, z, color);
 		SHOPS.put(shop.id(), shop);
 		save();
 		return shop;
@@ -88,7 +89,8 @@ public final class ShopManager {
 							o.get("dim").getAsString(),
 							o.get("x").getAsInt(),
 							o.get("y").getAsInt(),
-							o.get("z").getAsInt());
+							o.get("z").getAsInt(),
+							o.has("color") ? o.get("color").getAsString() : "white");
 					SHOPS.put(id, shop);
 					nextId = Math.max(nextId, id + 1);
 				} catch (Exception e) {
@@ -113,6 +115,7 @@ public final class ShopManager {
 			o.addProperty("x", shop.x());
 			o.addProperty("y", shop.y());
 			o.addProperty("z", shop.z());
+			o.addProperty("color", shop.color());
 			o.add("product", ItemStack.CODEC.encodeStart(ops, shop.product()).getOrThrow());
 			o.add("cost", ItemStack.CODEC.encodeStart(ops, shop.cost()).getOrThrow());
 			array.add(o);
