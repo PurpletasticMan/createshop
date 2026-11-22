@@ -119,7 +119,13 @@ public final class ShopCommands {
 		}
 
 		take(player, costItem, shop.price());
-		player.getInventory().placeItemBackInInventory(shop.product().copy());
+
+		// Put the item in the inventory; if there is no room, drop what is left at the player's feet.
+		ItemStack reward = shop.product().copy();
+		player.getInventory().add(reward);
+		if (!reward.isEmpty()) {
+			player.drop(reward, false);
+		}
 
 		source.sendSuccess(() -> Component.literal("Bought ").append(shop.product().getHoverName())
 				.append(" for " + shop.price() + " ").append(shop.cost().getHoverName()), false);
@@ -127,11 +133,8 @@ public final class ShopCommands {
 	}
 
 	private static MutableComponent describe(ShopManager.Shop shop) {
-		MutableComponent product = Component.empty()
-				.append(shop.product().getHoverName())
-				.withStyle(Style.EMPTY.withHoverEvent(new HoverEvent.ShowItem(shop.product())));
 		return Component.literal(shop.product().getCount() + "x ")
-				.append(product)
+				.append(shop.product().getHoverName())
 				.append(Component.literal(" - " + shop.price() + " ").withStyle(ChatFormatting.YELLOW))
 				.append(shop.cost().getHoverName());
 	}
