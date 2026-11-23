@@ -3,6 +3,7 @@ package com.createshop;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.ChatFormatting;
@@ -22,6 +23,7 @@ import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.BlockHitResult;
 
@@ -38,7 +40,7 @@ public final class ShopCommands {
 			"white", "gray", "dark_gray", "black", "red", "dark_red", "gold", "yellow",
 			"green", "dark_green", "aqua", "dark_aqua", "blue", "dark_blue", "light_purple", "dark_purple");
 
-	private record Pending(int price, ItemStack cost, String color) {}
+	private record Pending(int price, ItemStack cost, String color, boolean money) {}
 
 	private static final Map<UUID, Pending> PENDING = new HashMap<>();
 	private static CommandDispatcher<CommandSourceStack> dispatcher;
@@ -48,14 +50,16 @@ public final class ShopCommands {
 		dispatcher = d;
 
 		// /createshop <price> <cost item> [color]
+		// /createshop <price> money [color]
 		d.register(Commands.literal("createshop")
 				.requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
-				.then(Commands.argument("price", IntegerArgumentType.integer(1, 2304))
+				.then(Commands.argument("price", IntegerArgumentType.integer(1))
+						.then(Commands.literal("money")
+								.executes(ctx -> createShop(ctx, "white", true))
+								.then(colorArg(true)))
 						.then(Commands.argument("cost", ItemArgument.item(context))
-								.executes(ctx -> createShop(ctx, "white"))
-								.then(Commands.argument("color", StringArgumentType.word())
-										.suggests((c, b) -> SharedSuggestionProvider.suggest(COLORS.stream(), b))
-										.executes(ctx -> createShop(ctx, StringArgumentType.getString(ctx, "color")))))));
+								.executes(ctx -> createShop(ctx, "white", false))
+								.then(colorArg(false)))));
 
 		d.register(Commands.literal("removeshop")
 				.requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
@@ -66,9 +70,17 @@ public final class ShopCommands {
 		d.register(Commands.literal("shop")
 				.requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
 				.executes(ShopCommands::listShops));
+
+		MoneyCommands.register(d);
 	}
 
-	private static int createShop(CommandContext<CommandSourceStack> ctx, String color) throws CommandSyntaxException {
+	private static RequiredArgumentBuilder<CommandSourceStack, String> colorArg(boolean money) {
+		return Commands.argument("color", StringArgumentType.word())
+				.suggests((c, b) -> SharedSuggestionProvider.suggest(COLORS.stream(), b))
+				.executes(ctx -> createShop(ctx, StringArgumentType.getString(ctx, "color"), money));
+	}
+
+	private static int createShop(CommandContext<CommandSourceStack> ctx, String color, boolean money) throws CommandSyntaxException {
 		CommandSourceStack source = ctx.getSource();
 		ServerPlayer player = source.getPlayerOrException();
 
@@ -82,9 +94,15 @@ public final class ShopCommands {
 		}
 
 		int price = IntegerArgumentType.getInteger(ctx, "price");
-		ItemStack cost = ItemArgument.getItem(ctx, "cost").createItemStack(1);
+		if (!money && price > 2304) {
+			source.sendFailure(Component.literal("Item prices can be at most 2304."));
+			return 0;
+		}
+		ItemStack cost = money
+				? new ItemStack(Items.GOLD_INGOT)
+				: ItemArgument.getItem(ctx, "cost").createItemStack(1);
 
-		PENDING.put(player.getUUID(), new Pending(price, cost, color));
+		PENDING.put(player.getUUID(), new Pending(price, cost, color, money));
 		source.sendSuccess(() -> Component.literal(
 				"Now right-click the block you want the shop on (keep holding the item)."), false);
 		return 1;
@@ -109,11 +127,16 @@ public final class ShopCommands {
 		}
 		source.sendSuccess(() -> Component.literal("--- Shops ---").withStyle(ChatFormatting.GOLD), false);
 		for (ShopManager.Shop shop : ShopManager.all()) {
-			source.sendSuccess(() -> Component.literal("#" + shop.id() + " ")
-					.append(shop.product().getHoverName())
-					.append(" - " + shop.price() + " ")
-					.append(shop.cost().getHoverName())
-					.append(" at " + shop.x() + " " + shop.y() + " " + shop.z()), false);
+			source.sendSuccess(() -> {
+				Component price = shop.money()
+						? Component.literal(MoneyManager.fmt(shop.price()))
+						: Component.literal(shop.price() + " ").append(shop.cost().getHoverName());
+				return Component.literal("#" + shop.id() + " ")
+						.append(shop.product().getHoverName())
+						.append(" - ")
+						.append(price)
+						.append(" at " + shop.x() + " " + shop.y() + " " + shop.z());
+			}, false);
 		}
 		return ShopManager.all().size();
 	}
@@ -147,7 +170,7 @@ public final class ShopCommands {
 					: ""; // empty = use the item's own (translated) name
 
 			ShopManager.Shop shop = ShopManager.add(shopName, product, pending.cost(), pending.price(),
-					dim, pos.getX(), pos.getY(), pos.getZ(), pending.color());
+					dim, pos.getX(), pos.getY(), pos.getZ(), pending.color(), pending.money());
 			spawnHologram(sp, shop);
 			source.sendSuccess(() -> Component.literal("Created shop #" + shop.id()), false);
 			return InteractionResult.SUCCESS;
@@ -162,10 +185,29 @@ public final class ShopCommands {
 	}
 
 	private static void buy(ServerPlayer player, ShopManager.Shop shop) {
-		Item costItem = shop.cost().getItem();
 		int price = shop.price();
 		Inventory inv = player.getInventory();
 
+		// ---- paid with money
+		if (shop.money()) {
+			long balance = MoneyManager.balance(player.getUUID());
+			if (balance < price) {
+				actionBar(player, "{text:\"You need " + MoneyManager.fmt(price - balance) + " more\",color:\"red\"}");
+				return;
+			}
+			if (inv.getFreeSlot() == -1) {
+				actionBar(player, "{text:\"Your inventory is full\",color:\"red\"}");
+				return;
+			}
+			MoneyManager.add(player.getUUID(), -price);
+			inv.setItem(inv.getFreeSlot(), shop.product().copy());
+			actionBar(player, "[{text:\"Bought \",color:\"green\"}," + nameJson(shop.product(), "green", false)
+					+ ",{text:\" for " + MoneyManager.fmt(price) + "\",color:\"green\"}]");
+			return;
+		}
+
+		// ---- paid with items
+		Item costItem = shop.cost().getItem();
 		int have = count(player, costItem);
 		if (have < price) {
 			actionBar(player, "[{text:\"You need " + (price - have) + " more \",color:\"red\"},"
@@ -207,13 +249,15 @@ public final class ShopCommands {
 		run(src, "item replace entity @e[type=minecraft:item_display,tag=createshop_" + shop.id()
 				+ ",limit=1] contents from entity @s weapon.mainhand");
 
-		// 2) two lines of text: the item name (bold), then "10 x Diamond"
+		// 2) the name line uses the shop color and is bold; the price line is always white and plain
 		String name = nameJson(shop.product(), c, true);
 		if (shop.product().getCount() > 1) {
 			name = "[" + name + ",{text:\" x" + shop.product().getCount() + "\",color:\"" + c + "\"}]";
 		}
-		String text = "[" + name + ",{text:\"\\n\"},{text:\"" + shop.price() + " x \",color:\"" + c + "\"},"
-				+ nameJson(shop.cost(), c, false) + "]";
+		String priceLine = shop.money()
+				? "{text:\"" + MoneyManager.fmt(shop.price()) + "\",color:\"white\"}"
+				: "{text:\"" + shop.price() + " x \",color:\"white\"}," + nameJson(shop.cost(), "white", false);
+		String text = "[" + name + ",{text:\"\\n\"}," + priceLine + "]";
 		run(src, "summon minecraft:text_display " + pos(x, y + 1.85, z) + " {" + tags
 				+ "],billboard:\"center\",text:" + text + "}");
 	}
@@ -258,7 +302,13 @@ public final class ShopCommands {
 		return "{translate:\"" + stack.getItem().getDescriptionId() + "\"" + extra + "}";
 	}
 
-	private static void actionBar(ServerPlayer player, String componentSnbt) {
+	/** Shop message on the action bar. The money display waits 3 seconds so the message can be read. */
+	public static void actionBar(ServerPlayer player, String componentSnbt) {
+		MoneyManager.holdHud(player.getUUID());
+		rawActionBar(player, componentSnbt);
+	}
+
+	public static void rawActionBar(ServerPlayer player, String componentSnbt) {
 		CommandSourceStack serverSource = player.createCommandSourceStack().getServer()
 				.createCommandSourceStack().withSuppressedOutput();
 		run(serverSource, "title " + player.getUUID() + " actionbar " + componentSnbt);
@@ -268,7 +318,7 @@ public final class ShopCommands {
 		return s.replace("\\", "\\\\").replace("\"", "\\\"");
 	}
 
-	private static void run(CommandSourceStack src, String command) {
+	public static void run(CommandSourceStack src, String command) {
 		try {
 			dispatcher.execute(command, src);
 		} catch (CommandSyntaxException e) {
