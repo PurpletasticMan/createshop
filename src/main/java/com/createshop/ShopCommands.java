@@ -3,7 +3,6 @@ package com.createshop;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
-import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.ChatFormatting;
@@ -14,7 +13,6 @@ import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.commands.arguments.item.ItemArgument;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
@@ -39,8 +37,7 @@ public final class ShopCommands {
 			"white", "gray", "dark_gray", "black", "red", "dark_red", "gold", "yellow",
 			"green", "dark_green", "aqua", "dark_aqua", "blue", "dark_blue", "light_purple", "dark_purple");
 
-	/** name is null when the item's own name should be used. */
-	private record Pending(String name, int price, ItemStack cost, String color) {}
+	private record Pending(int price, ItemStack cost, String color) {}
 
 	private static final Map<UUID, Pending> PENDING = new HashMap<>();
 	private static CommandDispatcher<CommandSourceStack> dispatcher;
@@ -48,15 +45,15 @@ public final class ShopCommands {
 	public static void register(CommandDispatcher<CommandSourceStack> d, CommandBuildContext context) {
 		dispatcher = d;
 
-		// /createshop <price> <cost> [color]              -> uses the item's own name
-		// /createshop "<name>" <price> <cost> [color]     -> custom name (quotes for several words)
+		// /createshop <price> <cost item> [color]
 		d.register(Commands.literal("createshop")
 				.requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
 				.then(Commands.argument("price", IntegerArgumentType.integer(1, 2304))
-						.then(tail(context)))
-				.then(Commands.argument("name", StringArgumentType.string())
-						.then(Commands.argument("price", IntegerArgumentType.integer(1, 2304))
-								.then(tail(context)))));
+						.then(Commands.argument("cost", ItemArgument.item(context))
+								.executes(ctx -> createShop(ctx, "white"))
+								.then(Commands.argument("color", StringArgumentType.word())
+										.suggests((c, b) -> SharedSuggestionProvider.suggest(COLORS.stream(), b))
+										.executes(ctx -> createShop(ctx, StringArgumentType.getString(ctx, "color")))))));
 
 		d.register(Commands.literal("removeshop")
 				.requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
@@ -67,14 +64,6 @@ public final class ShopCommands {
 		d.register(Commands.literal("shop")
 				.requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
 				.executes(ShopCommands::listShops));
-	}
-
-	private static RequiredArgumentBuilder<CommandSourceStack, ?> tail(CommandBuildContext context) {
-		return Commands.argument("cost", ItemArgument.item(context))
-				.executes(ctx -> createShop(ctx, "white"))
-				.then(Commands.argument("color", StringArgumentType.word())
-						.suggests((c, b) -> SharedSuggestionProvider.suggest(COLORS.stream(), b))
-						.executes(ctx -> createShop(ctx, StringArgumentType.getString(ctx, "color"))));
 	}
 
 	private static int createShop(CommandContext<CommandSourceStack> ctx, String color) throws CommandSyntaxException {
@@ -90,16 +79,10 @@ public final class ShopCommands {
 			return 0;
 		}
 
-		String name = null;
-		try {
-			name = StringArgumentType.getString(ctx, "name");
-		} catch (IllegalArgumentException ignored) {
-			// no custom name given: the item's own name is used
-		}
 		int price = IntegerArgumentType.getInteger(ctx, "price");
 		ItemStack cost = ItemArgument.getItem(ctx, "cost").createItemStack(1);
 
-		PENDING.put(player.getUUID(), new Pending(name, price, cost, color));
+		PENDING.put(player.getUUID(), new Pending(price, cost, color));
 		source.sendSuccess(() -> Component.literal(
 				"Now right-click the block you want the shop on (keep holding the item)."), false);
 		return 1;
@@ -155,16 +138,11 @@ public final class ShopCommands {
 				return InteractionResult.SUCCESS;
 			}
 
+			// The shop uses the item exactly as you hold it (rename it on an anvil for a custom name).
 			ItemStack product = held.copy();
-			String shopName;
-			if (pending.name() != null) {
-				product.set(DataComponents.CUSTOM_NAME, Component.literal(pending.name()));
-				shopName = pending.name();
-			} else if (product.has(DataComponents.CUSTOM_NAME)) {
-				shopName = product.getHoverName().getString();
-			} else {
-				shopName = ""; // use the item's own (translated) name
-			}
+			String shopName = product.has(DataComponents.CUSTOM_NAME)
+					? product.getHoverName().getString()
+					: ""; // empty = use the item's own (translated) name
 
 			ShopManager.Shop shop = ShopManager.add(shopName, product, pending.cost(), pending.price(),
 					dim, pos.getX(), pos.getY(), pos.getZ(), pending.color());
@@ -221,44 +199,26 @@ public final class ShopCommands {
 		double y = shop.y();
 
 		// 1) the item being sold (copied exactly from your hand, so modded items work)
-		run(src, "summon minecraft:item_display " + pos(x, y + 0.5, z) + " {" + tags
-				+ ",billboard:\"vertical\",item_display:\"ground\"," + transform(0, 0, 0.25) + "}");
+		run(src, "summon minecraft:item_display " + pos(x, y + 1.25, z) + " {" + tags
+				+ ",billboard:\"vertical\",item_display:\"ground\"," + transform(1.3) + "}");
 		run(src, "item replace entity @e[type=minecraft:item_display,tag=createshop_" + shop.id()
 				+ ",limit=1] contents from entity @s weapon.mainhand");
 
-		// 2) the name (bold)
-		String name = shop.name().isEmpty()
-				? nameJson(shop.product(), c, true)
-				: "{text:\"" + esc(shop.name()) + "\",bold:true,color:\"" + c + "\"}";
+		// 2) two lines of text: the item name (bold), then "10 x Diamond"
+		String name = nameJson(shop.product(), c, true);
 		if (shop.product().getCount() > 1) {
 			name = "[" + name + ",{text:\" x" + shop.product().getCount() + "\",color:\"" + c + "\"}]";
 		}
-		run(src, "summon minecraft:text_display " + pos(x, y + 2.0, z) + " {" + tags
-				+ ",billboard:\"center\",text:" + name + "}");
-
-		// 3) the price row: "10 x" followed by a small icon of the cost item
-		int digits = String.valueOf(shop.price()).length();
-		double textW = 0.025 * (6 * digits + 10);
-		double iconW = 0.2;
-		double gap = 0.05;
-		double total = textW + gap + iconW;
-		double textX = -total / 2 + textW / 2;
-		double iconX = total / 2 - iconW / 2;
-		double rowY = y + 1.72;
-		String costId = BuiltInRegistries.ITEM.getKey(shop.cost().getItem()).toString();
-
-		run(src, "summon minecraft:text_display " + pos(x, rowY, z) + " {" + tags
-				+ ",billboard:\"center\"," + transform(textX, 0, 1.0)
-				+ ",text:{text:\"" + shop.price() + " x\",color:\"" + c + "\"}}");
-		run(src, "summon minecraft:item_display " + pos(x, rowY, z) + " {" + tags
-				+ ",billboard:\"center\",item_display:\"gui\",item:{id:\"" + costId + "\",count:1},"
-				+ transform(iconX, 0.12, iconW) + "}");
+		String text = "[" + name + ",{text:\"\\n\"},{text:\"" + shop.price() + " x \",color:\"" + c + "\"},"
+				+ nameJson(shop.cost(), c, false) + "]";
+		run(src, "summon minecraft:text_display " + pos(x, y + 1.85, z) + " {" + tags
+				+ ",billboard:\"center\",text:" + text + "}");
 	}
 
-	private static String transform(double tx, double ty, double scale) {
-		return "transformation:{left_translation:[" + f(tx) + "," + f(ty) + ",0f],right_translation:[0f,0f,0f],"
-				+ "left_rotation:[0f,0f,0f,1f],right_rotation:[0f,0f,0f,1f],scale:["
-				+ f(scale) + "," + f(scale) + "," + f(scale) + "]}";
+	private static String transform(double scale) {
+		String s = f(scale);
+		return "transformation:{left_translation:[0f,0f,0f],right_translation:[0f,0f,0f],"
+				+ "left_rotation:[0f,0f,0f,1f],right_rotation:[0f,0f,0f,1f],scale:[" + s + "," + s + "," + s + "]}";
 	}
 
 	private static String f(double v) {
