@@ -20,9 +20,9 @@ import java.util.Map;
 import java.util.TreeMap;
 
 public final class ShopManager {
-	/** name is empty ("") when the shop uses the item's own name. */
+	/** money = true means the price is paid with money, not items (cost is then just a placeholder). */
 	public record Shop(int id, String name, ItemStack product, ItemStack cost, int price,
-					   String dim, int x, int y, int z, String color) {}
+					   String dim, int x, int y, int z, String color, boolean money) {}
 
 	private static final Map<Integer, Shop> SHOPS = new TreeMap<>();
 	private static int nextId = 1;
@@ -32,8 +32,8 @@ public final class ShopManager {
 	private ShopManager() {}
 
 	public static Shop add(String name, ItemStack product, ItemStack cost, int price,
-						   String dim, int x, int y, int z, String color) {
-		Shop shop = new Shop(nextId++, name, product, cost, price, dim, x, y, z, color);
+						   String dim, int x, int y, int z, String color, boolean money) {
+		Shop shop = new Shop(nextId++, name, product, cost, price, dim, x, y, z, color, money);
 		SHOPS.put(shop.id(), shop);
 		save();
 		return shop;
@@ -54,6 +54,13 @@ public final class ShopManager {
 			if (s.dim().equals(dim) && s.x() == x && s.y() == y && s.z() == z) return s;
 		}
 		return null;
+	}
+
+	public static boolean hasMoneyShops() {
+		for (Shop s : SHOPS.values()) {
+			if (s.money()) return true;
+		}
+		return false;
 	}
 
 	public static Collection<Shop> all() {
@@ -90,7 +97,8 @@ public final class ShopManager {
 							o.get("x").getAsInt(),
 							o.get("y").getAsInt(),
 							o.get("z").getAsInt(),
-							o.has("color") ? o.get("color").getAsString() : "white");
+							o.has("color") ? o.get("color").getAsString() : "white",
+							o.has("money") && o.get("money").getAsBoolean());
 					SHOPS.put(id, shop);
 					nextId = Math.max(nextId, id + 1);
 				} catch (Exception e) {
@@ -116,6 +124,7 @@ public final class ShopManager {
 			o.addProperty("y", shop.y());
 			o.addProperty("z", shop.z());
 			o.addProperty("color", shop.color());
+			o.addProperty("money", shop.money());
 			o.add("product", ItemStack.CODEC.encodeStart(ops, shop.product()).getOrThrow());
 			o.add("cost", ItemStack.CODEC.encodeStart(ops, shop.cost()).getOrThrow());
 			array.add(o);
