@@ -14,6 +14,7 @@ import net.minecraft.commands.arguments.item.ItemArgument;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
@@ -41,6 +42,7 @@ public final class ShopCommands {
 
 	private static final Map<UUID, Pending> PENDING = new HashMap<>();
 	private static CommandDispatcher<CommandSourceStack> dispatcher;
+	private static long spinTicks = 0;
 
 	public static void register(CommandDispatcher<CommandSourceStack> d, CommandBuildContext context) {
 		dispatcher = d;
@@ -192,15 +194,16 @@ public final class ShopCommands {
 
 	private static void spawnHologram(ServerPlayer player, ShopManager.Shop shop) {
 		CommandSourceStack src = player.createCommandSourceStack().withSuppressedOutput();
-		String tags = "Tags:[\"createshop\",\"createshop_" + shop.id() + "\"]";
+		String tags = "Tags:[\"createshop\",\"createshop_" + shop.id() + "\"";
 		String c = shop.color();
 		double x = shop.x() + 0.5;
 		double z = shop.z() + 0.5;
 		double y = shop.y();
 
-		// 1) the item being sold (copied exactly from your hand, so modded items work)
+		// 1) the item being sold (copied exactly from your hand, so modded items work).
+		//    The extra "createshop_spin" tag makes it spin and bob like a dropped item.
 		run(src, "summon minecraft:item_display " + pos(x, y + 1.25, z) + " {" + tags
-				+ ",billboard:\"vertical\",item_display:\"ground\"," + transform(1.3) + "}");
+				+ ",\"createshop_spin\"],item_display:\"ground\",interpolation_duration:10," + transform(1.3) + "}");
 		run(src, "item replace entity @e[type=minecraft:item_display,tag=createshop_" + shop.id()
 				+ ",limit=1] contents from entity @s weapon.mainhand");
 
@@ -212,7 +215,22 @@ public final class ShopCommands {
 		String text = "[" + name + ",{text:\"\\n\"},{text:\"" + shop.price() + " x \",color:\"" + c + "\"},"
 				+ nameJson(shop.cost(), c, false) + "]";
 		run(src, "summon minecraft:text_display " + pos(x, y + 1.85, z) + " {" + tags
-				+ ",billboard:\"center\",text:" + text + "}");
+				+ "],billboard:\"center\",text:" + text + "}");
+	}
+
+	// Called every server tick: every 10 ticks, turn the floating items a little and bob them up and down.
+	public static void spinTick(MinecraftServer server) {
+		spinTicks++;
+		if (spinTicks % 10 != 0 || dispatcher == null || ShopManager.all().isEmpty()) return;
+
+		double angle = spinTicks / 20.0;                  // about 1 radian per second, like a dropped item
+		double bob = 0.1 * Math.sin(spinTicks / 10.0);    // gentle up and down
+		String merge = "{start_interpolation:0,interpolation_duration:10,transformation:{"
+				+ "left_translation:[0f," + f(bob) + ",0f],right_translation:[0f,0f,0f],"
+				+ "left_rotation:[0f," + f(Math.sin(angle / 2)) + ",0f," + f(Math.cos(angle / 2)) + "],"
+				+ "right_rotation:[0f,0f,0f,1f],scale:[1.3f,1.3f,1.3f]}}";
+		run(server.createCommandSourceStack().withSuppressedOutput(),
+				"execute as @e[type=minecraft:item_display,tag=createshop_spin] run data merge entity @s " + merge);
 	}
 
 	private static String transform(double scale) {
