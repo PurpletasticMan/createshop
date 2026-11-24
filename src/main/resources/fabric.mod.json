@@ -3,12 +3,13 @@
 	"id": "createshop",
 	"version": "${version}",
 	"name": "CreateShop",
-	"description": "Ops can turn the item in their hand into a shop listing with /createshop. Players buy with /shop.",
-	"authors": ["You"],
+	"description": "Ops can turn the item in their hand into a hologram shop. Money, earning rules and a money counter included.",
+	"authors": ["PurpletasticMan"],
 	"license": "CC0-1.0",
 	"environment": "*",
 	"entrypoints": {
-		"main": ["com.createshop.CreateShopMod"]
+		"main": ["com.createshop.CreateShopMod"],
+		"client": ["com.createshop.CreateShopClient"]
 	},
 	"depends": {
 		"fabricloader": ">=0.19.5",
