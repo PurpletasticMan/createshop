@@ -192,7 +192,7 @@ public final class ShopCommands {
 	/** Right-click on the shop's invisible box (where the item floats): buy. */
 	public static InteractionResult useEntity(Player player, Level level, InteractionHand hand, Entity entity) {
 		if (!(player instanceof ServerPlayer sp)) return InteractionResult.PASS;
-		if (entity.getType() != net.minecraft.world.entity.EntityType.INTERACTION) return InteractionResult.PASS;
+		if (!net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString().equals("minecraft:interaction")) return InteractionResult.PASS;
 
 		// whatever happens, this click belongs to the shop: nothing else may use it
 		if (hand != InteractionHand.MAIN_HAND) return InteractionResult.SUCCESS;
