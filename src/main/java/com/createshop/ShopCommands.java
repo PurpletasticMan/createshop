@@ -19,6 +19,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
@@ -43,6 +44,8 @@ public final class ShopCommands {
 	private record Pending(int price, ItemStack cost, String color, boolean money) {}
 
 	private static final Map<UUID, Pending> PENDING = new HashMap<>();
+	private static final Map<UUID, Long> LAST_CLICK = new HashMap<>();
+	private static final Map<UUID, Long> CREATED_AT = new HashMap<>();
 	private static CommandDispatcher<CommandSourceStack> dispatcher;
 	private static long spinTicks = 0;
 
@@ -141,45 +144,77 @@ public final class ShopCommands {
 		return ShopManager.all().size();
 	}
 
-	// Runs for every right-click on a block (both hands, both sides).
+	// ---------------------------------------------------------------- clicks
+
+	/** Right-click on a block: only used to place a new shop (after /createshop). */
 	public static InteractionResult useBlock(Player player, Level level, InteractionHand hand, BlockHitResult hit) {
 		if (!(player instanceof ServerPlayer sp) || hand != InteractionHand.MAIN_HAND) {
 			return InteractionResult.PASS;
 		}
 
-		String dim = level.dimension().toString();
-		BlockPos pos = hit.getBlockPos();
-
 		Pending pending = PENDING.remove(sp.getUUID());
-		if (pending != null) {
-			CommandSourceStack source = sp.createCommandSourceStack();
-			ItemStack held = sp.getMainHandItem();
-			if (held.isEmpty()) {
-				source.sendFailure(Component.literal("You need to hold the item. Run /createshop again."));
-				return InteractionResult.SUCCESS;
-			}
-			if (ShopManager.at(dim, pos.getX(), pos.getY(), pos.getZ()) != null) {
-				source.sendFailure(Component.literal("There is already a shop on that block."));
-				return InteractionResult.SUCCESS;
-			}
+		if (pending == null) return InteractionResult.PASS;
 
-			// The shop uses the item exactly as you hold it (rename it on an anvil for a custom name).
-			ItemStack product = held.copy();
-			String shopName = product.has(DataComponents.CUSTOM_NAME)
-					? product.getHoverName().getString()
-					: ""; // empty = use the item's own (translated) name
+		// This click only places the shop. Stop the game from also placing the held block
+		// or using the item, and put the player's inventory back in sync.
+		CREATED_AT.put(sp.getUUID(), spinTicks);
+		placeShop(sp, level, hit.getBlockPos(), pending);
+		sp.containerMenu.sendAllDataToRemote();
+		return InteractionResult.SUCCESS;
+	}
 
-			ShopManager.Shop shop = ShopManager.add(shopName, product, pending.cost(), pending.price(),
-					dim, pos.getX(), pos.getY(), pos.getZ(), pending.color(), pending.money());
-			spawnHologram(sp, shop);
-			source.sendSuccess(() -> Component.literal("Created shop #" + shop.id()), false);
-			return InteractionResult.SUCCESS;
+	private static void placeShop(ServerPlayer sp, Level level, BlockPos pos, Pending pending) {
+		CommandSourceStack source = sp.createCommandSourceStack();
+		String dim = level.dimension().toString();
+
+		ItemStack held = sp.getMainHandItem();
+		if (held.isEmpty()) {
+			source.sendFailure(Component.literal("You need to hold the item. Run /createshop again."));
+			return;
+		}
+		if (ShopManager.at(dim, pos.getX(), pos.getY(), pos.getZ()) != null) {
+			source.sendFailure(Component.literal("There is already a shop on that block."));
+			return;
 		}
 
-		ShopManager.Shop shop = ShopManager.at(dim, pos.getX(), pos.getY(), pos.getZ());
-		if (shop != null) {
-			buy(sp, shop);
-			return InteractionResult.SUCCESS;
+		// The shop uses the item exactly as you hold it (rename it on an anvil for a custom name).
+		ItemStack product = held.copy();
+		String shopName = product.has(DataComponents.CUSTOM_NAME)
+				? product.getHoverName().getString()
+				: ""; // empty = use the item's own (translated) name
+
+		ShopManager.Shop shop = ShopManager.add(shopName, product, pending.cost(), pending.price(),
+				dim, pos.getX(), pos.getY(), pos.getZ(), pending.color(), pending.money());
+		spawnHologram(sp, shop);
+		source.sendSuccess(() -> Component.literal("Created shop #" + shop.id()), false);
+	}
+
+	/** Right-click on the shop's invisible box (where the item floats): buy. */
+	public static InteractionResult useEntity(Player player, Level level, InteractionHand hand, Entity entity) {
+		if (!(player instanceof ServerPlayer sp)) return InteractionResult.PASS;
+		if (!entity.getTags().contains("createshop_click")) return InteractionResult.PASS;
+
+		// whatever happens, this click belongs to the shop: nothing else may use it
+		if (hand != InteractionHand.MAIN_HAND) return InteractionResult.SUCCESS;
+
+		BlockPos p = entity.blockPosition();
+		ShopManager.Shop shop = ShopManager.at(level.dimension().toString(), p.getX(), p.getY() - 1, p.getZ());
+		if (shop == null) return InteractionResult.SUCCESS;
+
+		// the game sends two packets for one click, so ignore a second one right after the first
+		long last = LAST_CLICK.getOrDefault(sp.getUUID(), -100L);
+		if (spinTicks - last < 4) return InteractionResult.SUCCESS;
+		LAST_CLICK.put(sp.getUUID(), spinTicks);
+
+		buy(sp, shop);
+		return InteractionResult.SUCCESS;
+	}
+
+	/** Blocks item use (bows, shields, sword abilities...) for a moment right after placing a shop. */
+	public static InteractionResult useItem(Player player, Level level, InteractionHand hand) {
+		if (player instanceof ServerPlayer sp && spinTicks - CREATED_AT.getOrDefault(sp.getUUID(), -100L) < 6) {
+			sp.containerMenu.sendAllDataToRemote();
+			return InteractionResult.FAIL;
 		}
 		return InteractionResult.PASS;
 	}
@@ -200,6 +235,7 @@ public final class ShopCommands {
 				return;
 			}
 			MoneyManager.add(player.getUUID(), -price);
+			// always an empty slot, so the item never merges into an existing stack
 			inv.setItem(inv.getFreeSlot(), shop.product().copy());
 			actionBar(player, "[{text:\"Bought \",color:\"green\"}," + nameJson(shop.product(), "green", false)
 					+ ",{text:\" for " + MoneyManager.fmt(price) + "\",color:\"green\"}]");
@@ -226,6 +262,7 @@ public final class ShopCommands {
 			return;
 		}
 
+		// always an empty slot, so the item never merges into an existing stack
 		inv.setItem(inv.getFreeSlot(), shop.product().copy());
 
 		actionBar(player, "[{text:\"Bought \",color:\"green\"}," + nameJson(shop.product(), "green", false)
@@ -242,14 +279,19 @@ public final class ShopCommands {
 		double z = shop.z() + 0.5;
 		double y = shop.y();
 
-		// 1) the item being sold (copied exactly from your hand, so modded items work).
+		// 1) the clickable area: an invisible 1x1x1 box in the space above the clicked block.
+		//    "response" makes the game treat a click on it as used, so held blocks and weapons do nothing.
+		run(src, "summon minecraft:interaction " + pos(x, y + 1.0, z) + " {" + tags
+				+ ",\"createshop_click\"],width:1.0f,height:1.0f,response:1b}");
+
+		// 2) the item, floating in the middle of that box (copied exactly from your hand, so modded items work).
 		//    The extra "createshop_spin" tag makes it spin and bob like a dropped item.
-		run(src, "summon minecraft:item_display " + pos(x, y + 1.25, z) + " {" + tags
+		run(src, "summon minecraft:item_display " + pos(x, y + 1.5, z) + " {" + tags
 				+ ",\"createshop_spin\"],item_display:\"ground\",interpolation_duration:10," + transform(1.3) + "}");
 		run(src, "item replace entity @e[type=minecraft:item_display,tag=createshop_" + shop.id()
 				+ ",limit=1] contents from entity @s weapon.mainhand");
 
-		// 2) the name line uses the shop color and is bold; the price line is always white and plain
+		// 3) the text above the box: the name line uses the shop color and is bold; the price line is always white
 		String name = nameJson(shop.product(), c, true);
 		if (shop.product().getCount() > 1) {
 			name = "[" + name + ",{text:\" x" + shop.product().getCount() + "\",color:\"" + c + "\"}]";
@@ -258,7 +300,7 @@ public final class ShopCommands {
 				? "{text:\"" + MoneyManager.fmt(shop.price()) + "\",color:\"white\"}"
 				: "{text:\"" + shop.price() + " x \",color:\"white\"}," + nameJson(shop.cost(), "white", false);
 		String text = "[" + name + ",{text:\"\\n\"}," + priceLine + "]";
-		run(src, "summon minecraft:text_display " + pos(x, y + 1.85, z) + " {" + tags
+		run(src, "summon minecraft:text_display " + pos(x, y + 2.1, z) + " {" + tags
 				+ "],billboard:\"center\",text:" + text + "}");
 	}
 
@@ -302,7 +344,7 @@ public final class ShopCommands {
 		return "{translate:\"" + stack.getItem().getDescriptionId() + "\"" + extra + "}";
 	}
 
-	/** Shop message on the action bar. The money display waits 3 seconds so the message can be read. */
+	/** Shop message on the action bar. */
 	public static void actionBar(ServerPlayer player, String componentSnbt) {
 		MoneyManager.holdHud(player.getUUID());
 		rawActionBar(player, componentSnbt);
