@@ -192,14 +192,14 @@ public final class ShopCommands {
 	/** Right-click on the shop's invisible box (where the item floats): buy. */
 	public static InteractionResult useEntity(Player player, Level level, InteractionHand hand, Entity entity) {
 		if (!(player instanceof ServerPlayer sp)) return InteractionResult.PASS;
-		if (!entity.getTags().contains("createshop_click")) return InteractionResult.PASS;
+		if (entity.getType() != net.minecraft.world.entity.EntityType.INTERACTION) return InteractionResult.PASS;
 
 		// whatever happens, this click belongs to the shop: nothing else may use it
 		if (hand != InteractionHand.MAIN_HAND) return InteractionResult.SUCCESS;
 
 		BlockPos p = entity.blockPosition();
 		ShopManager.Shop shop = ShopManager.at(level.dimension().toString(), p.getX(), p.getY() - 1, p.getZ());
-		if (shop == null) return InteractionResult.SUCCESS;
+		if (shop == null) return InteractionResult.PASS;
 
 		// the game sends two packets for one click, so ignore a second one right after the first
 		long last = LAST_CLICK.getOrDefault(sp.getUUID(), -100L);
