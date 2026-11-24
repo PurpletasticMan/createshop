@@ -7,6 +7,7 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
+import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
@@ -19,6 +20,9 @@ public class CreateShopMod implements ModInitializer {
 
 	@Override
 	public void onInitialize() {
+		// the packet that tells players' games how much money they have
+		PayloadTypeRegistry.clientboundPlay().register(MoneyPayload.TYPE, MoneyPayload.CODEC);
+
 		ServerLifecycleEvents.SERVER_STARTED.register(server -> {
 			ShopManager.load(server);
 			MoneyManager.load(server);
