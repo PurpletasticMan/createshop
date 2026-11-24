@@ -7,6 +7,8 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
+import net.fabricmc.fabric.api.event.player.UseEntityCallback;
+import net.fabricmc.fabric.api.event.player.UseItemCallback;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerPlayer;
@@ -37,7 +39,12 @@ public class CreateShopMod implements ModInitializer {
 		});
 		CommandRegistrationCallback.EVENT.register((dispatcher, buildContext, environment) ->
 				ShopCommands.register(dispatcher, buildContext));
+
+		// creating a shop (right-click a block) and buying (right-click the floating item)
 		UseBlockCallback.EVENT.register(ShopCommands::useBlock);
+		UseEntityCallback.EVENT.register((player, level, hand, entity, hitResult) ->
+				ShopCommands.useEntity(player, level, hand, entity));
+		UseItemCallback.EVENT.register(ShopCommands::useItem);
 
 		// Money from mining
 		PlayerBlockBreakEvents.AFTER.register((level, player, pos, state, blockEntity) -> {
