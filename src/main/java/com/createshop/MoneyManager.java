@@ -3,6 +3,7 @@ package com.createshop;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.storage.LevelResource;
@@ -11,15 +12,19 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
 
 /** Player balances plus the rules that decide how money is earned. Saved to <world>/createshop_money.json */
 public final class MoneyManager {
 	private static final Map<UUID, Long> BALANCES = new HashMap<>();
-	private static final Map<UUID, Long> HUD_HOLD = new HashMap<>();
+
+	/** the balance each player's game was last told about */
+	private static final Map<UUID, Long> LAST_SENT = new HashMap<>();
 
 	/** block id -> money for breaking it. The key "all" is used for every block that has no rule of its own. */
 	public static final Map<String, Long> MINE = new TreeMap<>();
@@ -143,15 +148,33 @@ public final class MoneyManager {
 		KILL.put("minecraft:" + mob, value);
 	}
 
-	// ---------------------------------------------------------------- money display (action bar)
+	// ---------------------------------------------------------------- telling players' games
 
-	/** Called after a shop message so the money display does not cover it straight away. */
+	/** Kept so shop messages still compile (the counter no longer uses the action bar). */
 	public static void holdHud(UUID id) {
-		HUD_HOLD.put(id, ticks + 60);
 	}
 
 	private static boolean isActive() {
 		return !MINE.isEmpty() || !KILL.isEmpty() || timeAmount > 0 || ShopManager.hasMoneyShops();
+	}
+
+	/** Sends each player (who has the mod) their balance, and by how much it changed since last time. */
+	private static void sendUpdates(MinecraftServer server) {
+		Set<UUID> online = new HashSet<>();
+		for (ServerPlayer p : server.getPlayerList().getPlayers()) {
+			UUID id = p.getUUID();
+			online.add(id);
+			if (!ServerPlayNetworking.canSend(p, MoneyPayload.TYPE)) continue;
+
+			long balance = balance(id);
+			Long last = LAST_SENT.get(id);
+			if (last != null && last == balance) continue;
+
+			long change = last == null ? 0 : balance - last;
+			ServerPlayNetworking.send(p, new MoneyPayload(balance, change));
+			LAST_SENT.put(id, balance);
+		}
+		LAST_SENT.keySet().retainAll(online);
 	}
 
 	public static void tick(MinecraftServer server) {
@@ -166,13 +189,9 @@ public final class MoneyManager {
 			}
 		}
 
-		// show the balance once a second
-		if (ticks % 20 == 0 && isActive()) {
-			for (ServerPlayer p : server.getPlayerList().getPlayers()) {
-				Long hold = HUD_HOLD.get(p.getUUID());
-				if (hold != null && ticks < hold) continue;
-				ShopCommands.rawActionBar(p, "{text:\"" + fmt(balance(p.getUUID())) + "\",color:\"green\"}");
-			}
+		// check five times a second whether anyone's money changed
+		if (ticks % 4 == 0 && isActive()) {
+			sendUpdates(server);
 		}
 	}
 
@@ -181,11 +200,17 @@ public final class MoneyManager {
 	public static void load(MinecraftServer server) {
 		file = server.getWorldPath(LevelResource.ROOT).resolve("createshop_money.json");
 		BALANCES.clear();
+		LAST_SENT.clear();
 		MINE.clear();
 		KILL.clear();
 		timeMinutes = 0;
 		timeAmount = 0;
 		dirty = false;
+
+		// remove the old scoreboard sidebar from the earlier version, if this world has it
+		ShopCommands.run(server.createCommandSourceStack().withSuppressedOutput(),
+				"scoreboard objectives remove createshop_money");
+
 		if (!Files.exists(file)) return;
 
 		try {
