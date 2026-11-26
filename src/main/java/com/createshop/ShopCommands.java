@@ -14,6 +14,7 @@ import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.commands.arguments.item.ItemArgument;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
@@ -70,9 +71,20 @@ public final class ShopCommands {
 						.suggests((c, b) -> SharedSuggestionProvider.suggest(ShopManager.ids().stream(), b))
 						.executes(ShopCommands::removeShop)));
 
-		d.register(Commands.literal("shop")
+		// /setshop  (ops): remember where you are standing as the shop spot
+		d.register(Commands.literal("setshop")
 				.requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
-				.executes(ShopCommands::listShops));
+				.executes(ShopCommands::setShopSpot));
+
+		// /shop  (everyone): teleport to the shop spot
+		d.register(Commands.literal("shop")
+				.executes(ShopCommands::goToShop));
+
+		// /shops list  (ops): list every shop
+		d.register(Commands.literal("shops")
+				.requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
+				.then(Commands.literal("list")
+						.executes(ShopCommands::listShops)));
 
 		MoneyCommands.register(d);
 	}
@@ -82,6 +94,43 @@ public final class ShopCommands {
 				.suggests((c, b) -> SharedSuggestionProvider.suggest(COLORS.stream(), b))
 				.executes(ctx -> createShop(ctx, StringArgumentType.getString(ctx, "color"), money));
 	}
+
+	// ---------------------------------------------------------------- shop spot (/setshop and /shop)
+
+	private static int setShopSpot(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+		CommandSourceStack source = ctx.getSource();
+		ServerPlayer player = source.getPlayerOrException();
+
+		// the dimension's name looks like "ResourceKey[minecraft:dimension / minecraft:overworld]"
+		String raw = player.level().dimension().toString();
+		int slash = raw.indexOf("/ ");
+		String dimId = slash >= 0 ? raw.substring(slash + 2).replace("]", "").trim() : raw;
+
+		WarpManager.set(source.getServer(), new WarpManager.Warp(
+				dimId, player.getX(), player.getY(), player.getZ(), player.getYRot(), player.getXRot()));
+		source.sendSuccess(() -> Component.literal("Shop spot set. Everyone can now use /shop to come here."), false);
+		return 1;
+	}
+
+	private static int goToShop(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+		CommandSourceStack source = ctx.getSource();
+		ServerPlayer player = source.getPlayerOrException();
+
+		WarpManager.Warp warp = WarpManager.get(source.getServer());
+		if (warp == null) {
+			source.sendFailure(Component.literal("The shop spot has not been set yet. Ask an op to run /setshop."));
+			return 0;
+		}
+
+		String coords = String.format(Locale.ROOT, "%.3f %.3f %.3f %.2f %.2f",
+				warp.x(), warp.y(), warp.z(), warp.yaw(), warp.pitch());
+		run(source.getServer().createCommandSourceStack().withSuppressedOutput(),
+				"execute in " + warp.dimId() + " run tp " + player.getUUID() + " " + coords);
+		source.sendSuccess(() -> Component.literal("Teleported to the shop."), false);
+		return 1;
+	}
+
+	// ---------------------------------------------------------------- creating and removing shops
 
 	private static int createShop(CommandContext<CommandSourceStack> ctx, String color, boolean money) throws CommandSyntaxException {
 		CommandSourceStack source = ctx.getSource();
@@ -192,14 +241,17 @@ public final class ShopCommands {
 	/** Right-click on the shop's invisible box (where the item floats): buy. */
 	public static InteractionResult useEntity(Player player, Level level, InteractionHand hand, Entity entity) {
 		if (!(player instanceof ServerPlayer sp)) return InteractionResult.PASS;
-		if (!net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString().equals("minecraft:interaction")) return InteractionResult.PASS;
+		if (!BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString().equals("minecraft:interaction")) {
+			return InteractionResult.PASS;
+		}
 
-		// whatever happens, this click belongs to the shop: nothing else may use it
-		if (hand != InteractionHand.MAIN_HAND) return InteractionResult.SUCCESS;
-
+		// only boxes that sit right above one of our shops count
 		BlockPos p = entity.blockPosition();
 		ShopManager.Shop shop = ShopManager.at(level.dimension().toString(), p.getX(), p.getY() - 1, p.getZ());
 		if (shop == null) return InteractionResult.PASS;
+
+		// whatever happens, this click belongs to the shop: nothing else may use it
+		if (hand != InteractionHand.MAIN_HAND) return InteractionResult.SUCCESS;
 
 		// the game sends two packets for one click, so ignore a second one right after the first
 		long last = LAST_CLICK.getOrDefault(sp.getUUID(), -100L);
